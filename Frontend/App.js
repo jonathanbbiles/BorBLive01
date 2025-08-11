@@ -1,4 +1,10 @@
-global.EXPO_PUBLIC_BACKEND_URL = 'https://<your-render-service>.onrender.com/api';
+import {
+  fetchAccount,
+  getOpenOrders as getOpenOrdersApi,
+  getPosition as getPositionApi,
+  placeOrder as apiPlaceOrder,
+  placeLimitSell as apiPlaceLimitSell,
+} from './network';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -10,14 +16,6 @@ import {
   Switch,
   Alert,
 } from 'react-native';
-
-import {
-  fetchAccount,
-  getOpenOrders as getOpenOrdersApi,
-  getPosition as getPositionApi,
-  placeOrder as apiPlaceOrder,
-  placeLimitSell as apiPlaceLimitSell,
-} from './network';
 
 
 /*

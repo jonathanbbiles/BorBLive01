@@ -7,14 +7,10 @@ router.get('/ping', (req, res) => res.json({ status: 'ok' }));
 router.get('/alpaca/ping', async (req, res) => {
   try {
     const r = await alpaca.get('/account');
-    if (r.status >= 400) {
-      return res
-        .status(r.status)
-        .json({ ok: false, status: r.status, data: r.data });
-    }
-    return res.json({ ok: true, account_id: r.data?.id, status: r.data?.status });
+    if (r.status >= 400) return res.status(r.status).json({ ok:false, status:r.status, data:r.data });
+    return res.json({ ok:true, account_id: r.data?.id, status: r.data?.status });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: e?.message || String(e) });
+    return res.status(500).json({ ok:false, message: e?.message || String(e) });
   }
 });
 
@@ -23,9 +19,7 @@ router.get('/alpaca/account', async (req, res) => {
     const r = await alpaca.get('/account');
     return res.status(r.status).json(r.data);
   } catch (e) {
-    return res
-      .status(500)
-      .json({ error: 'Backend error fetching account', message: e?.message || String(e) });
+    return res.status(500).json({ error: 'Failed to fetch account', message: e?.message || String(e) });
   }
 });
 
