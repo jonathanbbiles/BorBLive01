@@ -48,6 +48,9 @@ const HEADERS = {
   'Content-Type': 'application/json',
 };
 
+// Ensure this is set in Expo: EXPO_PUBLIC_BACKEND_URL=https://<your-render-service>.onrender.com/api
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:3000/api';
+
 // Buffer the sell price to offset taker fees while keeping the profit target
 const FEE_BUFFER = 0.0025; // 0.25% taker fee
 const TARGET_PROFIT = 0.0005; // 0.05% desired profit
@@ -93,6 +96,18 @@ const logTradeAction = async (type, symbol, details = {}) => {
   //   console.warn('Failed to send log:', err.message);
   // }
 };
+
+export async function getOpenOrders(symbol) {
+  try {
+    const url = `${BACKEND_URL}/orders/open?symbol=${encodeURIComponent(symbol)}`;
+    const res = await fetch(url, { method: 'GET' });
+    const data = await res.json(); // throws if non-JSON; caught below
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.warn('getOpenOrders failed:', e?.message || e);
+    return []; // always return array; UI remains safe for .filter/map
+  }
+}
 
 // List of crypto pairs we want to follow.  Each entry defines both the
 // instrument symbol used by Alpaca as well as the base coin symbol used
@@ -230,29 +245,6 @@ export default function App() {
     } catch (err) {
       console.error('getPositionInfo error:', err);
       return null;
-    }
-  };
-
-  // Check for any open orders on the given symbol.  Alpaca allows
-  // filtering the orders list by symbol using the `symbols` query
-  // parameter.  If this call fails we optimistically return an empty
-  // array so that the trade logic continues.
-  const getOpenOrders = async (symbol) => {
-    try {
-      const res = await fetch(
-        `${ALPACA_BASE_URL}/orders?status=open&symbols=${symbol}`,
-        { headers: HEADERS }
-      );
-      if (!res.ok) {
-        const txt = await res.text();
-        console.warn(`getOpenOrders failed ${res.status}:`, txt);
-        return [];
-      }
-      const data = await res.json();
-      return Array.isArray(data) ? data : [];
-    } catch (err) {
-      console.error('getOpenOrders error:', err);
-      return [];
     }
   };
 
