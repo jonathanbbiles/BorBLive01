@@ -12,7 +12,7 @@ if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) {
 
 const base = (ALPACA_BASE_URL || '').replace(/\/+$/, '');
 const alpaca = axios.create({
-  baseURL: `${base}/v2`, // single source of /v2 truth
+  baseURL: `${base}/v2`,
   headers: {
     'APCA-API-KEY-ID': ALPACA_API_KEY,
     'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY,
