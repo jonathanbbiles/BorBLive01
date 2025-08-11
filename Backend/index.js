@@ -1,55 +1,22 @@
 require('dotenv').config();
 const express = require('express');
-const axios = require('axios');
-const { placeMarketBuyThenSell } = require('./trade');
+const cors = require('cors');
+
+const { router: healthRouter } = require('./routes/health');
+const { router: ordersRouter } = require('./routes/orders');
+
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/V2';
-const API_KEY = 'PKN4ICO3WECXSLDGXCHC';
-const SECRET_KEY = 'PwJAEwLnLnsf7qAVvFutE8VIMgsAgvi7PMkMcCca';
+app.use('/api', healthRouter);
+app.use('/api', ordersRouter);
 
-// Sequentially place a limit buy order followed by a limit sell once filled
-app.post('/trade', async (req, res) => {
-  const { symbol } = req.body;
-  try {
-    const result = await placeMarketBuyThenSell(symbol);
-    res.json(result);
-  } catch (err) {
-    console.error('Trade error:', err?.response?.data || err.message);
-    res.status(500).json({ error: err.message });
-  }
+// final error guard
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Unhandled server error', message: err?.message || String(err) });
 });
 
-app.post('/buy', async (req, res) => {
-  const { symbol, qty, side, type, time_in_force, limit_price } = req.body;
-
-  try {
-    const response = await axios.post(
-      `${ALPACA_BASE_URL}/orders`,
-      {
-        symbol,
-        qty,
-        side,
-        type,
-        time_in_force,
-        limit_price,
-      },
-      {
-        headers: {
-          'APCA-API-KEY-ID': API_KEY,
-          'APCA-API-SECRET-KEY': SECRET_KEY,
-        },
-      }
-    );
-    res.json(response.data);
-  } catch (error) {
-    console.error('Buy error:', error?.response?.data || error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`);
-});
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Backend listening on :${port}`));
