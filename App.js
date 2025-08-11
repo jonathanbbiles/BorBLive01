@@ -1,3 +1,4 @@
+global.EXPO_PUBLIC_BACKEND_URL = 'https://<your-render-service>.onrender.com/api';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -18,7 +19,6 @@ import {
   placeLimitSell as apiPlaceLimitSell,
 } from './network';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:3000/api';
 
 /*
  * This component implements a simple crypto trading dashboard for Alpaca.  It
