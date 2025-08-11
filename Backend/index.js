@@ -5,7 +5,7 @@ const { placeMarketBuyThenSell } = require('./trade');
 const app = express();
 app.use(express.json());
 
-const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
+const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets';
 const API_KEY = 'PKN4ICO3WECXSLDGXCHC';
 const SECRET_KEY = 'PwJAEwLnLnsf7qAVvFutE8VIMgsAgvi7PMkMcCca';
 
