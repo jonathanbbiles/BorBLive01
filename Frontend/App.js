@@ -10,6 +10,16 @@ import {
   Alert,
 } from 'react-native';
 
+import {
+  fetchAccount,
+  getOpenOrders as getOpenOrdersApi,
+  getPosition as getPositionApi,
+  placeOrder as apiPlaceOrder,
+  placeLimitSell as apiPlaceLimitSell,
+} from './network';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:3000/api';
+
 /*
  * This component implements a simple crypto trading dashboard for Alpaca.  It
  * tracks a predefined list of crypto pairs, calculates a handful of
@@ -33,23 +43,6 @@ import {
  *    explain why certain decisions were made.  Feel free to remove them
  *    for production use.
  */
-
-// API credentials are expected to be provided via environment variables.
-// If they are missing the app will still run but trading requests will fail.
-// For temporary testing we hardcode the credentials. Remove before committing
-// to production.
-const ALPACA_KEY = 'PKN4ICO3WECXSLDGXCHC';
-const ALPACA_SECRET = 'PwJAEwLnLnsf7qAVvFutE8VIMgsAgvi7PMkMcCca';
-const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
-
-const HEADERS = {
-  'APCA-API-KEY-ID': ALPACA_KEY,
-  'APCA-API-SECRET-KEY': ALPACA_SECRET,
-  'Content-Type': 'application/json',
-};
-
-// Ensure this is set in Expo: EXPO_PUBLIC_BACKEND_URL=https://<your-render-service>.onrender.com/api
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:3000/api';
 
 // Buffer the sell price to offset taker fees while keeping the profit target
 const FEE_BUFFER = 0.0025; // 0.25% taker fee
@@ -97,15 +90,12 @@ const logTradeAction = async (type, symbol, details = {}) => {
   // }
 };
 
-export async function getOpenOrders(symbol) {
+async function getOpenOrders(symbol) {
   try {
-    const url = `${BACKEND_URL}/orders/open?symbol=${encodeURIComponent(symbol)}`;
-    const res = await fetch(url, { method: 'GET' });
-    const data = await res.json(); // throws if non-JSON; caught below
-    return Array.isArray(data) ? data : [];
+    return await getOpenOrdersApi(symbol);
   } catch (e) {
     console.warn('getOpenOrders failed:', e?.message || e);
-    return []; // always return array; UI remains safe for .filter/map
+    return [];
   }
 }
 
@@ -226,11 +216,8 @@ export default function App() {
   // nothing is held or if the request fails.
   const getPositionInfo = async (symbol) => {
     try {
-      const res = await fetch(`${ALPACA_BASE_URL}/positions/${symbol}`, {
-        headers: HEADERS,
-      });
-      if (!res.ok) return null;
-      const info = await res.json();
+      const info = await getPositionApi(symbol);
+      if (!info) return null;
       const qty = parseFloat(info.qty);
       const basis = parseFloat(info.avg_entry_price);
       const available = parseFloat(
@@ -242,8 +229,7 @@ export default function App() {
         basis,
         available,
       };
-    } catch (err) {
-      console.error('getPositionInfo error:', err);
+    } catch {
       return null;
     }
   };
@@ -310,15 +296,6 @@ export default function App() {
     // Include buffer for taker fees so profit margin is preserved
     const limit_price = (basis * (1 + TOTAL_MARKUP)).toFixed(5);
 
-    const limitSell = {
-      symbol,
-      qty,
-      side: 'sell',
-      type: 'limit',
-      time_in_force: CRYPTO_TIME_IN_FORCE,
-      limit_price,
-    };
-
     logTradeAction('sell_attempt', symbol, {
       qty,
       basis,
@@ -327,27 +304,14 @@ export default function App() {
     showNotification(`📤 Sell: ${symbol} @ $${limit_price} x${qty}`);
 
     try {
-      const res = await fetch(`${ALPACA_BASE_URL}/orders`, {
-        method: 'POST',
-        headers: HEADERS,
-        body: JSON.stringify(limitSell),
-      });
-
-      const raw = await res.text();
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        data = { raw };
-      }
-
-      if (res.ok && data.id) {
+      const data = await apiPlaceLimitSell({ symbol, qty, limit_price });
+      if (data?.id) {
         logTradeAction('sell_success', symbol, { orderId: data.id, qty });
         showNotification(`✅ Sell Placed: ${symbol} @ $${limit_price}`);
         console.log(`[SELL SUCCESS] ${symbol}`, data);
       } else {
         const msg = data?.message || JSON.stringify(data);
-        logTradeAction('sell_failed', symbol, { status: res.status, reason: msg });
+        logTradeAction('sell_failed', symbol, { reason: msg });
         console.warn(`[SELL FAILED] ${symbol}:`, msg);
         showNotification(`❌ Sell Failed: ${symbol} - ${msg}`);
       }
@@ -401,11 +365,8 @@ export default function App() {
         throw new Error('Invalid price data');
       }
 
-      // Get Alpaca account info
-      const accountRes = await fetch(`${ALPACA_BASE_URL}/account`, {
-        headers: HEADERS,
-      });
-      const accountData = await accountRes.json();
+      // Get Alpaca account info via backend
+      const accountData = await fetchAccount();
       const cash = parseFloat(accountData.cash || 0);
       const cashWithdrawable = parseFloat(accountData.cash_withdrawable || 0);
       const portfolioValue = parseFloat(accountData.portfolio_value || '0');
@@ -507,30 +468,17 @@ export default function App() {
         time_in_force: CRYPTO_TIME_IN_FORCE,
       };
 
-      const res = await fetch(`${ALPACA_BASE_URL}/orders`, {
-        method: 'POST',
-        headers: HEADERS,
-        body: JSON.stringify(order),
-      });
+      const result = await apiPlaceOrder(order);
 
-      const raw = await res.text();
-      let result;
-      try {
-        result = JSON.parse(raw);
-      } catch {
-        result = { raw };
-      }
-
-      if (res.ok && result.id) {
+      if (result?.id) {
         logTradeAction('buy_success', symbol, { id: result.id, notional });
         showNotification(`✅ Bought ${symbol} $${notional}`);
         setTimeout(() => placeLimitSell(symbol), 5000);
       } else {
         logTradeAction('buy_failed', symbol, {
-          status: res.status,
-          reason: result.message || raw,
+          reason: result?.message,
         });
-        showNotification(`❌ Buy Failed ${symbol}: ${result.message || raw}`);
+        showNotification(`❌ Buy Failed ${symbol}: ${result?.message}`);
       }
     } catch (err) {
       logTradeAction('buy_error', symbol, { error: err.message });
@@ -653,8 +601,7 @@ export default function App() {
     loadData();
     (async () => {
       try {
-        const res = await fetch('https://paper-api.alpaca.markets/v2/account', { headers: HEADERS });
-        const account = await res.json();
+        const account = await fetchAccount();
         console.log('[ALPACA CONNECTED]', account.account_number, 'Equity:', account.equity);
         showNotification('✅ Connected to Alpaca');
       } catch (err) {
