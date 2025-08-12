@@ -78,9 +78,9 @@ import {
 
 // to production.
 
-const ALPACA_KEY = 'PKN4ICO3WECXSLDGXCHC';
+const ALPACA_KEY = 'PKRXYFEPM6XVJB6GJA5Y';
 
-const ALPACA_SECRET = 'PwJAEwLnLnsf7qAVvFutE8VIMgsAgvi7PMkMcCca';
+const ALPACA_SECRET = 'Y1nwwncmaEb9TkugtqtIr4tGg84NZ5RZLRrYm9ey';
 
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
 
