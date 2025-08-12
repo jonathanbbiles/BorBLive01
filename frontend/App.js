@@ -1,3 +1,7 @@
+//[TRADE LOG] {"timestamp":"2025-08-12T18:29:13.541Z","type":"skip_small_order","symbol":"MATICUSD","reason":"insufficient cash","targetAllocation":50.239000000000004,"allocation":-0.99,"cash":502.39}
+
+
+
 import React, { useState, useEffect, useRef } from 'react';
 
 import {
@@ -84,7 +88,6 @@ const ALPACA_SECRET = 'Y1nwwncmaEb9TkugtqtIr4tGg84NZ5RZLRrYm9ey';
 
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
 
- 
 
 const HEADERS = {
 
@@ -832,7 +835,7 @@ export default function App() {
 
       const cash = parseFloat(accountData.cash || 0);
 
-      const cashWithdrawable = parseFloat(accountData.cash_withdrawable || 0);
+      const cashWithdrawable = parseFloat(accountData.buying_power || 0);
 
       const portfolioValue = parseFloat(accountData.portfolio_value || '0');
 
@@ -896,7 +899,7 @@ export default function App() {
 
       // Ensure allocation is never negative
 
-      if (allocation <= 0) {
+      if (allocation <=0 ) {
 
         logTradeAction('allocation_skipped', symbol, {
 
