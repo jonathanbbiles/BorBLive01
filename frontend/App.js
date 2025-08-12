@@ -59,8 +59,7 @@ export default function App() {
 
   const calcRSI = (closes, period = 14) => {
     if (closes.length < period + 1) return null;
-    let gains = 0,
-      losses = 0;
+    let gains = 0, losses = 0;
     for (let i = 1; i <= period; i++) {
       const delta = closes[i] - closes[i - 1];
       delta >= 0 ? (gains += delta) : (losses -= delta);
@@ -69,7 +68,6 @@ export default function App() {
     const avgLoss = losses / period;
     return avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   };
-
 
   const getTrendSymbol = (closes) => {
     if (closes.length < 15) return '🟰';
@@ -121,7 +119,9 @@ export default function App() {
       console.log('Skipping order due to insufficient funds this cycle');
       return;
     }
+
     try {
+      // --- Pricing & indicator pre-checks ---
       const priceRes = await fetch(
         `https://min-api.cryptocompare.com/data/price?fsym=${ccSymbol}&tsyms=USD`
       );
@@ -138,20 +138,15 @@ export default function App() {
       const histoData = await histoRes.json();
       const histoBars = Array.isArray(histoData?.Data?.Data)
         ? histoData.Data.Data
-        : null;
+        : [];
       if (!histoBars) {
         console.warn(`No chart data returned for ${ccSymbol}`);
-        if (!isManual) {
-          return;
-        }
+        if (!isManual) return;
       }
-      const closes = Array.isArray(histoBars)
-        ? histoBars.map((bar) => bar.close)
-        : [];
+      const closes = Array.isArray(histoBars) ? histoBars.map((bar) => bar.close) : [];
       console.log(`Chart data for ${ccSymbol}: ${closes.length} closes`);
 
       const { macd, signal } = calcMACD(closes);
-
       const shouldBuy = macd != null && signal != null && macd > signal;
 
       if (!shouldBuy && !isManual) {
@@ -159,41 +154,76 @@ export default function App() {
         return;
       }
 
+      // --- Account snapshot & available funds (correct fields) ---
       const accountRes = await fetch(`${ALPACA_BASE_URL}/account`, { headers: HEADERS });
       const accountData = await accountRes.json();
-      const cash = parseFloat(accountData.cash || '0');
 
-      if (cash < 10) {
+      const num = (v) => (v == null ? 0 : Number.parseFloat(String(v)));
+
+      // For crypto, prefer non_marginable_buying_power; then buying_power; then cash
+      const available = Math.max(
+        num(accountData.non_marginable_buying_power),
+        num(accountData.buying_power),
+        num(accountData.cash)
+      );
+
+      console.log('Account snapshot', {
+        buying_power: accountData.buying_power,
+        non_marginable_buying_power: accountData.non_marginable_buying_power,
+        cash: accountData.cash,
+        trades_blocked: accountData.trades_blocked,
+        account_blocked: accountData.account_blocked,
+        trade_suspended_by_user: accountData.trade_suspended_by_user,
+        available_for_calc: available,
+      });
+
+      if (
+        available < 10 ||
+        accountData.trades_blocked === true ||
+        accountData.account_blocked === true ||
+        accountData.trade_suspended_by_user === true
+      ) {
+        const reason =
+          available < 10
+            ? 'Insufficient funds'
+            : accountData.trades_blocked
+            ? 'Trades blocked'
+            : accountData.account_blocked
+            ? 'Account blocked'
+            : 'Trading suspended by user';
         if (isManual) {
-          showNotification('❌ Order Failed: Insufficient cash');
+          showNotification(`❌ Order Failed: ${reason}`);
         } else {
           insufficientFundsThisCycle = true;
-          console.log('Insufficient funds, skipping remaining buys this cycle');
+          console.log(`${reason}, skipping remaining buys this cycle`);
         }
         return;
       }
 
-      const allocation = Math.min(Math.max(cash * 0.1, 10), cash);
+      // --- Allocation & qty ---
+      const allocation = Math.min(Math.max(available * 0.1, 10), available);
       let qty = parseFloat((allocation / price).toFixed(6));
-      if (qty * price > cash) {
-        qty = parseFloat((cash / price).toFixed(6));
+      if (qty * price > available) {
+        qty = parseFloat((available / price).toFixed(6));
       }
-      if (qty <= 0 && cash > 0) {
-        qty = parseFloat((cash / price).toFixed(6));
+      if (qty <= 0 && available > 0) {
+        qty = parseFloat((available / price).toFixed(6));
       }
-      // Skip buy silently if not enough cash for auto trades
       if (qty <= 0) {
         if (isManual) {
-          showNotification('❌ Order Failed: Insufficient cash');
+          showNotification('❌ Order Failed: Insufficient funds after sizing');
         } else {
           insufficientFundsThisCycle = true;
-          console.log('Insufficient funds, skipping remaining buys this cycle');
+          console.log('Insufficient funds after sizing, skipping remaining buys this cycle');
         }
         return;
       }
 
+      // --- IMPORTANT: Use the slash symbol format for crypto orders ---
+      const alpacaSymbol = symbol.includes('/') ? symbol : `${ccSymbol}/USD`;
+
       const order = {
-        symbol,
+        symbol: alpacaSymbol,
         qty,
         side: 'buy',
         type: 'market',
@@ -219,7 +249,7 @@ export default function App() {
 
       console.log('✅ Market buy placed:', orderData);
 
-      // poll for fill status
+      // --- Poll for fill ---
       let filledOrder = null;
       for (let i = 0; i < 20; i++) {
         try {
@@ -246,16 +276,15 @@ export default function App() {
       const filledPrice = parseFloat(filledOrder.filled_avg_price);
       const sellBasis = isNaN(filledPrice) ? price : filledPrice;
 
-      showNotification(`✅ Buy Filled: ${symbol} at $${sellBasis.toFixed(2)}`);
+      showNotification(`✅ Buy Filled: ${alpacaSymbol} at $${sellBasis.toFixed(2)}`);
 
-      // Wait a short period to ensure the position settles before selling
+      // --- Wait briefly, then confirm position qty with same symbol format ---
       await sleep(5000);
 
-      // Always refetch the position before selling, retrying up to 3 times
       let positionQty = parseFloat(filledOrder.filled_qty);
       for (let posAttempt = 1; posAttempt <= 3; posAttempt++) {
         try {
-          const posRes = await fetch(`${ALPACA_BASE_URL}/positions/${symbol}`, {
+          const posRes = await fetch(`${ALPACA_BASE_URL}/positions/${encodeURIComponent(alpacaSymbol)}`, {
             headers: HEADERS,
           });
           if (posRes.ok) {
@@ -271,20 +300,15 @@ export default function App() {
             );
           }
         } catch (posErr) {
-          console.error(
-            `❌ Position fetch error on attempt ${posAttempt}:`,
-            posErr
-          );
+          console.error(`❌ Position fetch error on attempt ${posAttempt}:`, posErr);
         }
-        if (posAttempt < 3) {
-          await sleep(1000);
-        }
+        if (posAttempt < 3) await sleep(1000);
       }
-      // clamp to 6 decimals for crypto precision
       positionQty = parseFloat(positionQty.toFixed(6));
 
+      // --- Place limit sell ---
       const limitSell = {
-        symbol,
+        symbol: alpacaSymbol,
         qty: positionQty,
         side: 'sell',
         type: 'limit',
@@ -318,7 +342,7 @@ export default function App() {
           if (sellRes.ok) {
             sellSuccess = true;
             console.log(
-              `✅ Limit sell placed for ${symbol}: qty=${limitSell.qty} limit=${limitSell.limit_price}`,
+              `✅ Limit sell placed for ${alpacaSymbol}: qty=${limitSell.qty} limit=${limitSell.limit_price}`,
               sellData
             );
             showNotification(
@@ -333,9 +357,7 @@ export default function App() {
               JSON.stringify(limitSell),
               Array.from(sellRes.headers.entries())
             );
-            if (attempt < 3) {
-              await sleep(5000);
-            }
+            if (attempt < 3) await sleep(5000);
           }
         } catch (sellErr) {
           lastErrorMsg = sellErr.message;
@@ -344,21 +366,15 @@ export default function App() {
             sellErr,
             JSON.stringify(limitSell)
           );
-          if (attempt < 3) {
-            await sleep(5000);
-          }
+          if (attempt < 3) await sleep(5000);
         }
       }
 
       if (!sellSuccess) {
         const statusPart = lastStatus ? `Status: ${lastStatus}\n` : '';
         const msgPart = lastErrorMsg ? `Error: ${lastErrorMsg}` : 'Unknown error';
-        const match = /requested:\s*([0-9.]+),\s*available:\s*([0-9.]+)/i.exec(
-          lastErrorMsg || ''
-        );
-        const qtyPart = match
-          ? `Requested: ${match[1]}\nAvailable: ${match[2]}\n`
-          : '';
+        const match = /requested:\s*([0-9.]+),\s*available:\s*([0-9.]+)/i.exec(lastErrorMsg || '');
+        const qtyPart = match ? `Requested: ${match[1]}\nAvailable: ${match[2]}\n` : '';
         showNotification(
           `❌ Sell Failed: ${statusPart}${msgPart}\n${qtyPart}Unable to place sell order after retries`
         );
@@ -475,21 +491,13 @@ export default function App() {
         <Text style={styles.symbol}>
           {asset.name} ({asset.symbol})
         </Text>
-        {asset.entryReady && (
-          <Text style={styles.entryReady}>✅ ENTRY READY</Text>
-        )}
-        {asset.watchlist && !asset.entryReady && (
-          <Text style={styles.watchlist}>🟧 WATCHLIST</Text>
-        )}
+        {asset.entryReady && <Text style={styles.entryReady}>✅ ENTRY READY</Text>}
+        {asset.watchlist && !asset.entryReady && <Text style={styles.watchlist}>🟧 WATCHLIST</Text>}
         {asset.price != null && <Text>Price: ${asset.price}</Text>}
         {asset.rsi != null && <Text>RSI: {asset.rsi}</Text>}
         <Text>Trend: {asset.trend}</Text>
-        {asset.missingData && (
-          <Text style={styles.missing}>⚠️ Missing data</Text>
-        )}
-        {asset.error && (
-          <Text style={styles.error}>❌ Not tradable: {asset.error}</Text>
-        )}
+        {asset.missingData && <Text style={styles.missing}>⚠️ Missing data</Text>}
+        {asset.error && <Text style={styles.error}>❌ Not tradable: {asset.error}</Text>}
         <Text>{asset.time}</Text>
         <TouchableOpacity onPress={() => placeOrder(asset.symbol, asset.cc, true)}>
           <Text style={styles.buyButton}>Manual BUY</Text>
