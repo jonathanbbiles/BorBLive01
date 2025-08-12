@@ -9,7 +9,7 @@ import {
   Switch,
 } from 'react-native';
 
-const ALPACA_KEY = 'PKGY01ABISEXQJZX5L7M';
+const ALPACA_KEY = 'PKN4ICO3WECXSLDGXCHC';
 const ALPACA_SECRET = 'PwJAEwLnLnsf7qAVvFutE8VIMgsAgvi7PMkMcCca';
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
 
