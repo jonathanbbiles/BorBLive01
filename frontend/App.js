@@ -161,7 +161,7 @@ export default function App() {
 
       const accountRes = await fetch(`${ALPACA_BASE_URL}/account`, { headers: HEADERS });
       const accountData = await accountRes.json();
-      const cash = parseFloat(accountData.cash || '0');
+      const cash = parseFloat(accountData.buyingpower || '0');
 
       if (cash < 10) {
         if (isManual) {
