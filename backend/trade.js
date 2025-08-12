@@ -2,7 +2,7 @@ const axios = require('axios');
 
  
 
-const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
+const ALPACA_BASE_URL = 'https://api.alpaca.markets';
 
 const DATA_URL = 'https://data.alpaca.markets/v1beta2';
 
