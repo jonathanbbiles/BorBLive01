@@ -39,7 +39,7 @@ import {
 // to production.
 const ALPACA_KEY = 'AKS3TBCTY4CFZ2LBK2GZ';
 const ALPACA_SECRET = 'fX1QUAM5x8FGeGcEneIrgTCQXRSwcZnoaxHC6QXM';
-const ALPACA_BASE_URL = 'https://api.alpaca.markets/v2';
+const ALPACA_BASE_URL = 'https://api.alpaca.markets/v2'; // live
 
 const HEADERS = {
   'APCA-API-KEY-ID': ALPACA_KEY,
@@ -65,38 +65,16 @@ export const registerLogSubscriber = (fn) => {
 };
 
 // Simple logger to trace trade attempts.
-// It timestamps each event and prints to the console.
-// Optionally send logs to your own endpoint or save to device storage.
-// Adapt `sendToServer` as needed, or remove it if you don't have a server.
 const logTradeAction = async (type, symbol, details = {}) => {
   const timestamp = new Date().toISOString();
   const entry = { timestamp, type, symbol, ...details };
-  // Always log locally to the Metro/Device console
   console.log('[TRADE LOG]', entry);
-  // If a subscriber is registered, forward the entry
   if (typeof logSubscriber === 'function') {
-    try {
-      logSubscriber(entry);
-    } catch (err) {
-      console.warn('Log subscriber error:', err);
-    }
+    try { logSubscriber(entry); } catch (err) { console.warn('Log subscriber error:', err); }
   }
-  // Example: Send log to your server (optional)
-  // try {
-  //   await fetch('https://yourloggingendpoint.example.com/log', {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json' },
-  //     body: JSON.stringify(entry),
-  //   });
-  // } catch (err) {
-  //   console.warn('Failed to send log:', err.message);
-  // }
 };
 
-// List of crypto pairs we want to follow.  Each entry defines both the
-// instrument symbol used by Alpaca as well as the base coin symbol used
-// by CryptoCompare.  If you wish to track additional tokens you can
-// simply append to this list.
+// List of crypto pairs we want to follow.
 const ORIGINAL_TOKENS = [
   { name: 'BTC/USD', symbol: 'BTCUSD', cc: 'BTC' },
   { name: 'ETH/USD', symbol: 'ETHUSD', cc: 'ETH' },
@@ -129,6 +107,11 @@ export default function App() {
   const [notification, setNotification] = useState(null);
   const [logHistory, setLogHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [acctSummary, setAcctSummary] = useState({
+    portfolioValue: null,
+    dailyChangeUsd: null,
+    dailyChangePct: null,
+  });
   const intervalRef = useRef(null);
 
   // Subscribe to log events and keep only the most recent five entries
@@ -138,15 +121,53 @@ export default function App() {
     });
   }, []);
 
-  // Helper to update the toast notification. Notifications last five seconds
-  // to give users ample time to read them.
+  // Helper to update the toast notification.
   const showNotification = (message) => {
     setNotification(message);
     setTimeout(() => setNotification(null), 5000);
   };
 
-  // Basic RSI implementation using a simple moving average of gains and
-  // losses.  Returns null if insufficient data is provided.
+  // ===== Account summary (Portfolio Value + Daily % Change) =====
+  const getAccountSummary = async () => {
+    try {
+      const res = await fetch(`${ALPACA_BASE_URL}/account`, { headers: HEADERS });
+      if (!res.ok) throw new Error(`Account ${res.status}`);
+      const a = await res.json();
+
+      // Use equity as current portfolio value (for crypto it reflects live equity).
+      const equity = parseFloat(a.equity ?? a.portfolio_value ?? 'NaN');
+      // Prior-day reference: try last_equity first, then equity_previous_close.
+      const prior =
+        parseFloat(a.last_equity ?? 'NaN');
+      const priorFallback =
+        parseFloat(a.equity_previous_close ?? 'NaN');
+      const ref = Number.isFinite(prior) ? prior :
+                  (Number.isFinite(priorFallback) ? priorFallback : NaN);
+
+      let changeUsd = Number.isFinite(equity) && Number.isFinite(ref) ? (equity - ref) : NaN;
+      let changePct = Number.isFinite(changeUsd) && ref > 0 ? (changeUsd / ref) * 100 : NaN;
+
+      setAcctSummary({
+        portfolioValue: Number.isFinite(equity) ? equity : null,
+        dailyChangeUsd: Number.isFinite(changeUsd) ? changeUsd : null,
+        dailyChangePct: Number.isFinite(changePct) ? changePct : null,
+      });
+
+      console.log('[ACCOUNT]', {
+        equity,
+        last_equity: a.last_equity,
+        equity_previous_close: a.equity_previous_close,
+        changeUsd,
+        changePct,
+      });
+    } catch (err) {
+      console.warn('getAccountSummary error:', err.message);
+      setAcctSummary({ portfolioValue: null, dailyChangeUsd: null, dailyChangePct: null });
+    }
+  };
+  // ===============================================================
+
+  // Basic RSI
   const calcRSI = (closes, period = 14) => {
     if (!Array.isArray(closes) || closes.length < period + 1) return null;
     let gains = 0;
@@ -162,10 +183,7 @@ export default function App() {
     return 100 - 100 / (1 + rs);
   };
 
-  // Determine whether prices are trending up or down by performing a
-  // least-squares linear regression over the last 15 closes.  The magic
-  // numbers here were chosen heuristically: slopes above 0.02 are treated
-  // as up, below -0.02 as down.
+  // Trend via linear regression slope
   const getTrendSymbol = (closes) => {
     if (!Array.isArray(closes) || closes.length < 15) return '🟰';
     const x = Array.from({ length: 15 }, (_, i) => i);
@@ -178,9 +196,7 @@ export default function App() {
     return slope > 0.02 ? '⬆️' : slope < -0.02 ? '⬇️' : '🟰';
   };
 
-  // Compute the MACD line (difference between two EMAs) and its signal
-  // line (EMA of the MACD line).  If there is insufficient data this
-  // function returns {macd: null, signal: null}.
+  // MACD
   const calcMACD = (closes, short = 12, long = 26, signalPeriod = 9) => {
     if (!Array.isArray(closes) || closes.length < long + signalPeriod) {
       return { macd: null, signal: null };
@@ -203,11 +219,8 @@ export default function App() {
     return { macd: macdLine[macdLine.length - 1], signal };
   };
 
-  // Sleep helper so we can await delays between retries
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  // Retrieve the current position for a given symbol.  Returns null if
-  // nothing is held or if the request fails.
   const getPositionInfo = async (symbol) => {
     try {
       const res = await fetch(`${ALPACA_BASE_URL}/positions/${symbol}`, {
@@ -222,18 +235,16 @@ export default function App() {
       );
       if (isNaN(available) || available <= 0) return null;
 
-      // ---- Minimal edit #1: compute a live "mark" price if Alpaca provides enough info ----
       const marketValue = parseFloat(info.market_value ?? 'NaN');
       const markFromMV = Number.isFinite(marketValue) && qty > 0 ? marketValue / qty : NaN;
       const markFallback = parseFloat(info.current_price ?? info.asset_current_price ?? 'NaN');
       const mark = Number.isFinite(markFromMV) ? markFromMV : (Number.isFinite(markFallback) ? markFallback : NaN);
-      // -------------------------------------------------------------------------------------
 
       return {
         qty: parseFloat(Number(qty).toFixed(6)),
         basis,
         available,
-        mark, // may be NaN if not provided; callers should guard
+        mark,
       };
     } catch (err) {
       console.error('getPositionInfo error:', err);
@@ -241,10 +252,6 @@ export default function App() {
     }
   };
 
-  // Check for any open orders on the given symbol.  Alpaca allows
-  // filtering the orders list by symbol using the `symbols` query
-  // parameter.  If this call fails we optimistically return an empty
-  // array so that the trade logic continues.
   const getOpenOrders = async (symbol) => {
     try {
       const res = await fetch(
@@ -264,17 +271,10 @@ export default function App() {
     }
   };
 
-  // Place a limit sell order using the latest position information from
-  // Alpaca. The function silently skips if the quantity is zero or below
-  // Alpaca's minimum trade size (~$1 notional). Logs and notifications are
-  // emitted for every attempt.
   const placeLimitSell = async (symbol) => {
-    // Always re-fetch the position to ensure we have the live balance
     const position = await getPositionInfo(symbol);
     if (!position) {
-      logTradeAction('sell_skip_reason', symbol, {
-        reason: 'no position held',
-      });
+      logTradeAction('sell_skip_reason', symbol, { reason: 'no position held' });
       console.log(`[SELL SKIPPED] No position held for ${symbol}`);
       return;
     }
@@ -287,48 +287,26 @@ export default function App() {
         availableQty: qty,
         basisPrice: basis,
       });
-      console.log(
-        `[SELL SKIPPED] Invalid qty or basis for ${symbol}: qty=${qty}, basis=${basis}`
-      );
+      console.log(`[SELL SKIPPED] Invalid qty or basis for ${symbol}: qty=${qty}, basis=${basis}`);
       return;
     }
-    logTradeAction('sell_qty_confirm', symbol, {
-      qtyRequested: qty,
-      qtyAvailable: position.available,
-    });
-    console.log(
-      `[SELL QTY CONFIRM] ${symbol} available=${position.available} qty=${qty}`
-    );
-    // Skip if the notional value is below Alpaca's minimum ($1)
+    logTradeAction('sell_qty_confirm', symbol, { qtyRequested: qty, qtyAvailable: position.available });
+    console.log(`[SELL QTY CONFIRM] ${symbol} available=${position.available} qty=${qty}`);
+
     const notional = qty * basis;
     if (notional < 1) {
       logTradeAction('sell_skip', symbol, {
-        availableQty: qty,
-        basisPrice: basis,
-        notionalValue: notional,
-        reason: 'notional below $1',
+        availableQty: qty, basisPrice: basis, notionalValue: notional, reason: 'notional below $1',
       });
-      logTradeAction('sell_skip_reason', symbol, {
-        reason: 'notional below $1',
-        availableQty: qty,
-        basisPrice: basis,
-        notionalValue: notional,
-      });
-      console.log(
-        `[SELL SKIPPED] ${symbol} notional $${notional.toFixed(2)} below $1`
-      );
-      showNotification(
-        `❌ Skip ${symbol}: $${notional.toFixed(2)} < $1`
-      );
+      logTradeAction('sell_skip_reason', symbol, { reason: 'notional below $1', availableQty: qty, basisPrice: basis, notionalValue: notional });
+      console.log(`[SELL SKIPPED] ${symbol} notional $${notional.toFixed(2)} below $1`);
+      showNotification(`❌ Skip ${symbol}: $${notional.toFixed(2)} < $1`);
       return;
     }
 
-    // ---- Minimal edit #2: use the higher of avg basis or live mark to avoid too-low sells ----
     const liveMark = parseFloat(position.mark);
     const ref = Math.max(basis, Number.isFinite(liveMark) ? liveMark : 0);
-    // Include buffer for taker fees so profit margin is preserved
     const limit_price = (ref * (1 + TOTAL_MARKUP)).toFixed(5);
-    // ------------------------------------------------------------------------------------------
 
     const limitSell = {
       symbol,
@@ -339,11 +317,7 @@ export default function App() {
       limit_price,
     };
 
-    logTradeAction('sell_attempt', symbol, {
-      qty,
-      basis,
-      limit_price,
-    });
+    logTradeAction('sell_attempt', symbol, { qty, basis, limit_price });
     showNotification(`📤 Sell: ${symbol} @ $${limit_price} x${qty}`);
 
     try {
@@ -355,11 +329,7 @@ export default function App() {
 
       const raw = await res.text();
       let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        data = { raw };
-      }
+      try { data = JSON.parse(raw); } catch { data = { raw }; }
 
       if (res.ok && data.id) {
         logTradeAction('sell_success', symbol, { orderId: data.id, qty });
@@ -378,15 +348,7 @@ export default function App() {
     }
   };
 
-  // Place a market buy order for the given symbol.  Will allocate up to
-  // 10% of the current portfolio to the trade but never more than the
-  // available cash. Duplicate buys are
-  // prevented via the perSymbolFundsLock map and via checking for open
-  // orders on the symbol.  After a successful buy the function will
-  // automatically place a limit sell once the position settles.
   const placeOrder = async (symbol, ccSymbol = symbol, isManual = false) => {
-
-    // Check for open orders FIRST
     const openOrders = await getOpenOrders(symbol);
     if (openOrders.length > 0) {
       logTradeAction('skip_open_orders', symbol, { openOrders });
@@ -394,72 +356,50 @@ export default function App() {
       return;
     }
 
-    // Check if already held and only skip if the notional value is above $1
     const held = await getPositionInfo(symbol);
     if (held && held.available * held.basis > 1) {
       logTradeAction('skip_held_position', symbol, { held });
       showNotification(`💼 Held: ${symbol} x${held.qty} @ $${held.basis}`);
       console.log(`💼 Skipping ${symbol} - position already held`);
-      logTradeAction('buy_attempt_skipped', symbol, {
-        reason: 'position already held',
-        held,
-      });
+      logTradeAction('buy_attempt_skipped', symbol, { reason: 'position already held', held });
       return;
     }
 
     logTradeAction('buy_attempt', symbol, { isManual });
 
     try {
-      // Fetch current market price
       const priceRes = await fetch(
         `https://min-api.cryptocompare.com/data/price?fsym=${ccSymbol}&tsyms=USD`
       );
       const priceData = await priceRes.json();
       const price = priceData.USD;
+      if (!price || isNaN(price)) throw new Error('Invalid price data');
 
-      if (!price || isNaN(price)) {
-        throw new Error('Invalid price data');
-      }
-
-      // Get Alpaca account info
-      const accountRes = await fetch(`${ALPACA_BASE_URL}/account`, {
-        headers: HEADERS,
-      });
+      const accountRes = await fetch(`${ALPACA_BASE_URL}/account`, { headers: HEADERS });
       const accountData = await accountRes.json();
       const cash = parseFloat(accountData.cash || 0);
       const cashWithdrawable = parseFloat(accountData.buying_power || 0);
-      const portfolioValue = parseFloat(accountData.portfolio_value || '0');
+      const portfolioValue = parseFloat(accountData.portfolio_value ?? accountData.equity ?? '0');
 
       logTradeAction('cash_available', symbol, { cash, cash_withdrawable: cashWithdrawable });
 
-      const SAFETY_MARGIN = 1; // prevents over-request by $1 buffer
-      const SAFETY_FACTOR = 0.99; // extra buffer for price fluctuations
+      const SAFETY_MARGIN = 1;
+      const SAFETY_FACTOR = 0.99;
 
       const targetAllocation = portfolioValue * 0.1;
 
-      // Always choose the smaller of the 10% allocation, available cash
-      // minus the safety margin and withdrawable cash minus the safety margin
-      // to avoid requesting more funds than can actually be used.
       let allocation = Math.min(
         targetAllocation,
         cash - SAFETY_MARGIN,
         cashWithdrawable - SAFETY_MARGIN
       );
 
-      // Apply a small safety factor to account for price fluctuations
-      // between calculation and order placement.
       allocation *= SAFETY_FACTOR;
 
-      // Final guard: never request more than the cash or withdrawable balances
-      if (allocation > cash) {
-        allocation = Math.floor(cash * 100) / 100;
-      }
-      if (allocation > cashWithdrawable) {
-        allocation = Math.floor(cashWithdrawable * 100) / 100;
-      }
+      if (allocation > cash) allocation = Math.floor(cash * 100) / 100;
+      if (allocation > cashWithdrawable) allocation = Math.floor(cashWithdrawable * 100) / 100;
 
-      // Ensure allocation is never negative
-      if (allocation <=0 ) {
+      if (allocation <= 0) {
         logTradeAction('allocation_skipped', symbol, {
           reason: 'safety margin exceeded available cash',
           cash,
@@ -469,12 +409,9 @@ export default function App() {
         return;
       }
 
-      // Calculate the final notional using the adjusted allocation and
-      // round down to two decimals to stay within available funds
       const rawAllocation = allocation;
       let notional = Math.floor(allocation * 100) / 100;
 
-      // Confirm final allocation details
       logTradeAction('allocation_check', symbol, {
         cash,
         targetAllocation,
@@ -496,20 +433,9 @@ export default function App() {
         return;
       }
 
-      // Use Alpaca's notional parameter to cap the trade amount. Rounding
-      // to two decimals ensures we never exceed available cash even if the
-      // price moves slightly after this calculation.
+      if (notional > cash) notional = Math.floor(cash * 100) / 100;
+      if (notional > cashWithdrawable) notional = Math.floor(cashWithdrawable * 100) / 100;
 
-      // If our requested notional exceeds cash, fall back to using
-      // 100% of available cash (rounded down to two decimals).
-      if (notional > cash) {
-        notional = Math.floor(cash * 100) / 100;
-      }
-      if (notional > cashWithdrawable) {
-        notional = Math.floor(cashWithdrawable * 100) / 100;
-      }
-
-      // Ensure Alpaca minimum order amount of $1 is met after adjustment.
       if (notional < 1) {
         logTradeAction('skip_small_order', symbol, {
           reason: 'notional below alpaca minimum after adjustment',
@@ -535,21 +461,14 @@ export default function App() {
 
       const raw = await res.text();
       let result;
-      try {
-        result = JSON.parse(raw);
-      } catch {
-        result = { raw };
-      }
+      try { result = JSON.parse(raw); } catch { result = { raw }; }
 
       if (res.ok && result.id) {
         logTradeAction('buy_success', symbol, { id: result.id, notional });
         showNotification(`✅ Bought ${symbol} $${notional}`);
         setTimeout(() => placeLimitSell(symbol), 5000);
       } else {
-        logTradeAction('buy_failed', symbol, {
-          status: res.status,
-          reason: result.message || raw,
-        });
+        logTradeAction('buy_failed', symbol, { status: res.status, reason: result.message || raw });
         showNotification(`❌ Buy Failed ${symbol}: ${result.message || raw}`);
       }
     } catch (err) {
@@ -558,16 +477,18 @@ export default function App() {
     }
   };
 
-  // Refresh all token data.  When auto trading is enabled this will also
-  // attempt to place buy orders on tokens whose MACD has crossed above
-  // its signal line.
+  // Refresh all token data + account summary
   const loadData = async () => {
-    if (isLoading) return; // Prevent overlapping refreshes
+    if (isLoading) return;
     setIsLoading(true);
-    // Log whenever a refresh cycle begins
+
+    // Update portfolio/changes at the start of every cycle
+    await getAccountSummary();
+
     logTradeAction('refresh', 'all');
-    perSymbolFundsLock = {}; // Reset funds lock each cycle
+    perSymbolFundsLock = {};
     const results = [];
+
     for (const asset of tracked) {
       const token = {
         ...asset,
@@ -584,7 +505,6 @@ export default function App() {
         time: new Date().toLocaleTimeString(),
       };
       try {
-        // Fetch price and historical data in parallel
         const [priceRes, histoRes] = await Promise.all([
           fetch(
             `https://min-api.cryptocompare.com/data/price?fsym=${asset.cc || asset.symbol}&tsyms=USD`
@@ -593,53 +513,38 @@ export default function App() {
             `https://min-api.cryptocompare.com/data/v2/histominute?fsym=${asset.cc || asset.symbol}&tsym=USD&limit=52&aggregate=15`
           ),
         ]);
-        // Price
         const priceData = await priceRes.json();
-        if (typeof priceData.USD === 'number') {
-          token.price = priceData.USD;
-        }
-        // Chart data
+        if (typeof priceData.USD === 'number') token.price = priceData.USD;
+
         const histoData = await histoRes.json();
-        const histoBars = Array.isArray(histoData?.Data?.Data)
-          ? histoData.Data.Data
-          : [];
-        const closes = histoBars
-          .map((bar) => bar.close)
-          .filter((c) => typeof c === 'number');
+        const histoBars = Array.isArray(histoData?.Data?.Data) ? histoData.Data.Data : [];
+        const closes = histoBars.map((bar) => bar.close).filter((c) => typeof c === 'number');
         if (closes.length >= 20) {
           const r = calcRSI(closes);
           const macdRes = calcMACD(closes);
           token.rsi = r != null ? r.toFixed(1) : null;
           token.macd = macdRes.macd;
           token.signal = macdRes.signal;
-          token.signalDiff =
-            token.macd != null && token.signal != null
-              ? token.macd - token.signal
-              : null;
+          token.signalDiff = token.macd != null && token.signal != null ? token.macd - token.signal : null;
           const prev = calcMACD(closes.slice(0, -1));
           token.entryReady = token.macd != null && token.signal != null && token.macd > token.signal;
           token.watchlist =
-            token.macd != null &&
-            token.signal != null &&
-            prev.macd != null &&
-            token.macd > prev.macd &&
-            token.macd <= token.signal;
+            token.macd != null && token.signal != null && prev.macd != null &&
+            token.macd > prev.macd && token.macd <= token.signal;
         }
         token.trend = getTrendSymbol(closes);
         token.missingData = token.price == null || closes.length < 20;
-        // Automatically place sell for any held positions
+
         const held = await getPositionInfo(asset.symbol);
         if (held) {
           await placeLimitSell(asset.symbol);
         }
-        // Auto trade: verify entry conditions and log outcome
+
         if (token.entryReady) {
           logTradeAction('entry_ready_confirmed', asset.symbol);
           await placeOrder(asset.symbol, asset.cc);
         } else {
-          logTradeAction('entry_skipped', asset.symbol, {
-            entryReady: token.entryReady,
-          });
+          logTradeAction('entry_skipped', asset.symbol, { entryReady: token.entryReady });
         }
       } catch (err) {
         console.error(`Failed to load ${asset.symbol}:`, err);
@@ -654,26 +559,22 @@ export default function App() {
     setIsLoading(false);
   };
 
-  // Start the refresh interval on mount. Clear any existing interval before
-  // creating a new one to avoid overlaps.
+  // Start the refresh interval on mount.
   useEffect(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
     intervalRef.current = setInterval(loadData, 60000);
-    // Clean up on unmount
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, []);
 
-  // Kick off a data load on mount
+  // Kick off a data load on mount + verify connection
   useEffect(() => {
-    loadData();
     (async () => {
+      await getAccountSummary();
       try {
-        const res = await fetch('https://paper-api.alpaca.markets/v2/account', { headers: HEADERS });
+        const res = await fetch(`${ALPACA_BASE_URL}/account`, { headers: HEADERS });
         const account = await res.json();
         console.log('[ALPACA CONNECTED]', account.account_number, 'Equity:', account.equity);
         showNotification('✅ Connected to Alpaca');
@@ -682,6 +583,7 @@ export default function App() {
         showNotification('❌ Alpaca API Error');
       }
     })();
+    loadData();
   }, []);
 
   const onRefresh = () => {
@@ -701,21 +603,13 @@ export default function App() {
         <Text style={styles.symbol}>
           {asset.name} ({asset.symbol})
         </Text>
-        {asset.entryReady && (
-          <Text style={styles.entryReady}>✅ ENTRY READY</Text>
-        )}
-        {asset.watchlist && !asset.entryReady && (
-          <Text style={styles.watchlist}>🟧 WATCHLIST</Text>
-        )}
+        {asset.entryReady && <Text style={styles.entryReady}>✅ ENTRY READY</Text>}
+        {asset.watchlist && !asset.entryReady && <Text style={styles.watchlist}>🟧 WATCHLIST</Text>}
         {asset.price != null && <Text>Price: ${asset.price}</Text>}
         {asset.rsi != null && <Text>RSI: {asset.rsi}</Text>}
         <Text>Trend: {asset.trend}</Text>
-        {asset.missingData && (
-          <Text style={styles.missing}>⚠️ Missing data</Text>
-        )}
-        {asset.error && (
-          <Text style={styles.error}>❌ Not tradable: {asset.error}</Text>
-        )}
+        {asset.missingData && <Text style={styles.missing}>⚠️ Missing data</Text>}
+        {asset.error && <Text style={styles.error}>❌ Not tradable: {asset.error}</Text>}
         <Text>{asset.time}</Text>
         <TouchableOpacity onPress={() => placeOrder(asset.symbol, asset.cc, true)}>
           <Text style={styles.buyButton}>Manual BUY</Text>
@@ -724,9 +618,6 @@ export default function App() {
     );
   };
 
-  // Sort tokens by signal difference descending, falling back to
-  // alphabetical sort to create stable ordering.  Null values sort
-  // last.
   const bySignal = (a, b) => {
     const diffA = a.signalDiff ?? -Infinity;
     const diffB = b.signalDiff ?? -Infinity;
@@ -738,6 +629,11 @@ export default function App() {
   const watchlistTokens = data.filter((t) => !t.entryReady && t.watchlist).sort(bySignal);
   const otherTokens = data.filter((t) => !t.entryReady && !t.watchlist).sort(bySignal);
 
+  const pv = acctSummary.portfolioValue;
+  const chUsd = acctSummary.dailyChangeUsd;
+  const chPct = acctSummary.dailyChangePct;
+  const changeColor = chPct == null ? '#666' : chPct >= 0 ? '#0a8f08' : '#c62828';
+
   return (
     <ScrollView
       contentContainerStyle={[styles.container, darkMode && styles.containerDark]}
@@ -747,22 +643,48 @@ export default function App() {
         <Switch value={darkMode} onValueChange={setDarkMode} />
         <Text style={[styles.title, darkMode && styles.titleDark]}>🎭 Bullish or Bust!</Text>
       </View>
+
+      {/* === Portfolio header (value + daily change) === */}
+      <View style={[styles.portfolioCard, darkMode && styles.portfolioCardDark]}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+          <Text style={[styles.portfolioLabel, darkMode && styles.titleDark]}>Your Portfolio</Text>
+          <Text style={[styles.periodPill, darkMode && styles.periodPillDark]}>1D</Text>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 6 }}>
+          <Text style={[styles.portfolioValue, darkMode && styles.titleDark]}>
+            {pv == null ? '—' : `$ ${pv.toFixed(2)}`}
+          </Text>
+          <Text style={[styles.portfolioChangePct, { color: changeColor }]}>
+            {chPct == null ? '' : `  ${chPct.toFixed(2)}%`}
+          </Text>
+        </View>
+        {chUsd != null && (
+          <Text style={[styles.portfolioChangeUsd, darkMode && styles.titleDark]}>
+            Daily Change {chUsd >= 0 ? '+' : ''}${Math.abs(chUsd).toFixed(2)}
+          </Text>
+        )}
+      </View>
+      {/* ============================================== */}
+
       <View style={styles.row}>
         <Text style={[styles.title, darkMode && styles.titleDark]}>Hide Others</Text>
         <Switch value={hideOthers} onValueChange={setHideOthers} />
       </View>
+
       <Text style={styles.sectionHeader}>✅ Entry Ready</Text>
       {entryReadyTokens.length > 0 ? (
         <View style={styles.cardGrid}>{entryReadyTokens.map(renderCard)}</View>
       ) : (
         <Text style={styles.noData}>No Entry Ready tokens</Text>
       )}
+
       <Text style={styles.sectionHeader}>🟧 Watchlist</Text>
       {watchlistTokens.length > 0 ? (
         <View style={styles.cardGrid}>{watchlistTokens.map(renderCard)}</View>
       ) : (
         <Text style={styles.noData}>No Watchlist tokens</Text>
       )}
+
       {!hideOthers && (
         <>
           <Text style={styles.sectionHeader}>❌ Others</Text>
@@ -773,6 +695,7 @@ export default function App() {
           )}
         </>
       )}
+
       {logHistory.length > 0 && (
         <View style={styles.logPanel}>
           {logHistory.map((log, idx) => (
@@ -813,6 +736,30 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 18, fontWeight: 'bold', color: '#000' },
   titleDark: { color: '#fff' },
+
+  // Portfolio header styles
+  portfolioCard: {
+    backgroundColor: '#f7f7f7',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+  },
+  portfolioCardDark: { backgroundColor: '#1e1e1e' },
+  portfolioLabel: { fontSize: 14, fontWeight: '600', color: '#333' },
+  periodPill: {
+    fontSize: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: '#e6e6e6',
+    overflow: 'hidden',
+    color: '#333',
+  },
+  periodPillDark: { backgroundColor: '#2a2a2a', color: '#fff' },
+  portfolioValue: { fontSize: 28, fontWeight: '800', color: '#000' },
+  portfolioChangePct: { fontSize: 18, fontWeight: '700', marginLeft: 6 },
+  portfolioChangeUsd: { marginTop: 4, color: '#666' },
+
   cardGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
