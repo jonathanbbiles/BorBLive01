@@ -39,7 +39,7 @@ import {
 // to production.
 const ALPACA_KEY = 'AKS3TBCTY4CFZ2LBK2GZ';
 const ALPACA_SECRET = 'fX1QUAM5x8FGeGcEneIrgTCQXRSwcZnoaxHC6QXM';
-const ALPACA_BASE_URL = 'https://api.alpaca.markets';
+const ALPACA_BASE_URL = 'https://api.alpaca.markets/v2';
 
 const HEADERS = {
   'APCA-API-KEY-ID': ALPACA_KEY,
