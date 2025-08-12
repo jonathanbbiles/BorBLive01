@@ -1,3 +1,4 @@
+// App.js
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -9,6 +10,7 @@ import {
   Switch,
 } from 'react-native';
 
+// ⚠️ Keys shown only to match your test case; rotate in real use.
 const ALPACA_KEY = 'PKN4ICO3WECXSLDGXCHC';
 const ALPACA_SECRET = 'PwJAEwLnLnsf7qAVvFutE8VIMgsAgvi7PMkMcCca';
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets/v2';
@@ -19,7 +21,7 @@ const HEADERS = {
   'Content-Type': 'application/json',
 };
 
-// Track if we ran out of funds during this refresh cycle
+// Guard across a refresh cycle
 let insufficientFundsThisCycle = false;
 
 const ORIGINAL_TOKENS = [
@@ -61,8 +63,8 @@ export default function App() {
     if (closes.length < period + 1) return null;
     let gains = 0, losses = 0;
     for (let i = 1; i <= period; i++) {
-      const delta = closes[i] - closes[i - 1];
-      delta >= 0 ? (gains += delta) : (losses -= delta);
+      const d = closes[i] - closes[i - 1];
+      d >= 0 ? (gains += d) : (losses -= d);
     }
     const avgGain = gains / period;
     const avgLoss = losses / period;
@@ -75,43 +77,35 @@ export default function App() {
     const y = closes.slice(-15);
     const sumX = x.reduce((a, b) => a + b);
     const sumY = y.reduce((a, b) => a + b);
-    const sumXY = x.reduce((sum, xi, i) => sum + xi * y[i], 0);
-    const sumX2 = x.reduce((sum, xi) => sum + xi * xi, 0);
+    const sumXY = x.reduce((s, xi, i) => s + xi * y[i], 0);
+    const sumX2 = x.reduce((s, xi) => s + xi * xi, 0);
     const slope = (15 * sumXY - sumX * sumY) / (15 * sumX2 - sumX * sumX);
     return slope > 0.02 ? '⬆️' : slope < -0.02 ? '⬇️' : '🟰';
   };
 
   const calcMACD = (closes, short = 12, long = 26, signalPeriod = 9) => {
     if (closes.length < long + signalPeriod) return { macd: null, signal: null };
-    const kShort = 2 / (short + 1);
-    const kLong = 2 / (long + 1);
+    const kS = 2 / (short + 1);
+    const kL = 2 / (long + 1);
     const kSig = 2 / (signalPeriod + 1);
-    let emaShort = closes[0];
-    let emaLong = closes[0];
+    let emaS = closes[0];
+    let emaL = closes[0];
     const macdLine = [];
-    closes.forEach((price) => {
-      emaShort = price * kShort + emaShort * (1 - kShort);
-      emaLong = price * kLong + emaLong * (1 - kLong);
-      macdLine.push(emaShort - emaLong);
-    });
+    for (const p of closes) {
+      emaS = p * kS + emaS * (1 - kS);
+      emaL = p * kL + emaL * (1 - kL);
+      macdLine.push(emaS - emaL);
+    }
     let signal = macdLine[0];
     for (let i = 1; i < macdLine.length; i++) {
       signal = macdLine[i] * kSig + signal * (1 - kSig);
     }
-    return { macd: macdLine[macdLine.length - 1], signal };
+    return { macd: macdLine.at(-1), signal };
   };
 
-  const calcEMA = (closes, period = 10) => {
-    if (closes.length < period) return null;
-    const k = 2 / (period + 1);
-    let ema = closes[0];
-    for (let i = 1; i < closes.length; i++) {
-      ema = closes[i] * k + ema * (1 - k);
-    }
-    return ema;
-  };
-
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const num = (v) => (v == null ? 0 : Number.parseFloat(String(v)));
+  const cents = (usd) => Math.floor(usd * 100) / 100;
 
   const placeOrder = async (symbol, ccSymbol = symbol, isManual = false) => {
     if (!autoTrade && !isManual) return;
@@ -121,200 +115,162 @@ export default function App() {
     }
 
     try {
-      // --- Pricing & indicator pre-checks ---
+      // --- Indicators / sanity price ---
       const priceRes = await fetch(
         `https://min-api.cryptocompare.com/data/price?fsym=${ccSymbol}&tsyms=USD`
       );
       const priceData = await priceRes.json();
       const price = typeof priceData.USD === 'number' ? priceData.USD : null;
-      if (price == null) {
-        console.warn(`Price unavailable for ${ccSymbol}`);
-        return;
-      }
+      if (price == null) return;
 
       const histoRes = await fetch(
         `https://min-api.cryptocompare.com/data/v2/histominute?fsym=${ccSymbol}&tsym=USD&limit=52&aggregate=15`
       );
       const histoData = await histoRes.json();
-      const histoBars = Array.isArray(histoData?.Data?.Data)
-        ? histoData.Data.Data
-        : [];
-      if (!histoBars) {
-        console.warn(`No chart data returned for ${ccSymbol}`);
-        if (!isManual) return;
-      }
-      const closes = Array.isArray(histoBars) ? histoBars.map((bar) => bar.close) : [];
-      console.log(`Chart data for ${ccSymbol}: ${closes.length} closes`);
+      const bars = Array.isArray(histoData?.Data?.Data) ? histoData.Data.Data : [];
+      const closes = bars.map((b) => b.close).filter((c) => typeof c === 'number');
 
       const { macd, signal } = calcMACD(closes);
       const shouldBuy = macd != null && signal != null && macd > signal;
+      if (!shouldBuy && !isManual) return;
 
-      if (!shouldBuy && !isManual) {
-        console.log(`Entry conditions not met for ${symbol}`);
-        return;
-      }
-
-      // --- Account snapshot & available funds (correct fields) ---
+      // --- Account snapshot: use ONLY non_marginable_buying_power for crypto sizing ---
       const accountRes = await fetch(`${ALPACA_BASE_URL}/account`, { headers: HEADERS });
-      const accountData = await accountRes.json();
+      const account = await accountRes.json();
 
-      const num = (v) => (v == null ? 0 : Number.parseFloat(String(v)));
+      const trading_blocked = !!account.trading_blocked;
+      const account_blocked = !!account.account_blocked;
+      const trade_suspended_by_user = !!account.trade_suspended_by_user;
 
-      // For crypto, prefer non_marginable_buying_power; then buying_power; then cash
-      const available = Math.max(
-        num(accountData.non_marginable_buying_power),
-        num(accountData.buying_power),
-        num(accountData.cash)
-      );
+      const nmbp = num(account.non_marginable_buying_power); // settled cash for crypto
+      const available = nmbp;
 
       console.log('Account snapshot', {
-        buying_power: accountData.buying_power,
-        non_marginable_buying_power: accountData.non_marginable_buying_power,
-        cash: accountData.cash,
-        trades_blocked: accountData.trades_blocked,
-        account_blocked: accountData.account_blocked,
-        trade_suspended_by_user: accountData.trade_suspended_by_user,
-        available_for_calc: available,
+        non_marginable_buying_power: account.non_marginable_buying_power,
+        buying_power: account.buying_power,
+        cash: account.cash,
+        trading_blocked,
+        account_blocked,
+        trade_suspended_by_user,
+        available_for_crypto: available,
       });
 
       if (
         available < 10 ||
-        accountData.trades_blocked === true ||
-        accountData.account_blocked === true ||
-        accountData.trade_suspended_by_user === true
+        trading_blocked ||
+        account_blocked ||
+        trade_suspended_by_user
       ) {
         const reason =
           available < 10
-            ? 'Insufficient funds'
-            : accountData.trades_blocked
-            ? 'Trades blocked'
-            : accountData.account_blocked
+            ? 'Insufficient crypto buying power (non_marginable)'
+            : trading_blocked
+            ? 'Trading blocked'
+            : account_blocked
             ? 'Account blocked'
             : 'Trading suspended by user';
-        if (isManual) {
-          showNotification(`❌ Order Failed: ${reason}`);
-        } else {
-          insufficientFundsThisCycle = true;
-          console.log(`${reason}, skipping remaining buys this cycle`);
-        }
+        if (isManual) showNotification(`❌ Order Failed: ${reason}`);
+        else insufficientFundsThisCycle = available < 10;
         return;
       }
 
-      // --- Allocation & qty ---
-      const allocation = Math.min(Math.max(available * 0.1, 10), available);
-      let qty = parseFloat((allocation / price).toFixed(6));
-      if (qty * price > available) {
-        qty = parseFloat((available / price).toFixed(6));
-      }
-      if (qty <= 0 && available > 0) {
-        qty = parseFloat((available / price).toFixed(6));
-      }
-      if (qty <= 0) {
-        if (isManual) {
-          showNotification('❌ Order Failed: Insufficient funds after sizing');
-        } else {
-          insufficientFundsThisCycle = true;
-          console.log('Insufficient funds after sizing, skipping remaining buys this cycle');
-        }
+      // --- Notional sizing with cushion (avoid rejections on price hop) ---
+      const rawAlloc = Math.min(Math.max(available * 0.10, 10), available);
+      const cushion = 0.998;
+      const notionalUSD = cents(rawAlloc * cushion);
+      if (notionalUSD < 10) {
+        if (isManual) showNotification('❌ Order Failed: < $10 notional');
+        else insufficientFundsThisCycle = true;
         return;
       }
 
-      // --- IMPORTANT: Use the slash symbol format for crypto orders ---
+      // Alpaca crypto symbols use slash
       const alpacaSymbol = symbol.includes('/') ? symbol : `${ccSymbol}/USD`;
 
-      const order = {
+      // --- Market BUY (no extended_hours for crypto) using NOTIONAL ---
+      const buyOrder = {
         symbol: alpacaSymbol,
-        qty,
+        notional: notionalUSD.toFixed(2),
         side: 'buy',
         type: 'market',
-        time_in_force: 'ioc',
+        time_in_force: 'gtc',
         order_class: 'simple',
-        extended_hours: true,
       };
 
-      const res = await fetch(`${ALPACA_BASE_URL}/orders`, {
+      const buyRes = await fetch(`${ALPACA_BASE_URL}/orders`, {
         method: 'POST',
         headers: HEADERS,
-        body: JSON.stringify(order),
+        body: JSON.stringify(buyOrder),
       });
-      const orderData = await res.json();
-
-      if (!res.ok) {
-        console.error('❌ Order failed:', orderData);
-        if (isManual) {
-          showNotification(`❌ Order Failed: ${orderData.message || 'Unknown error'}`);
-        }
+      const buyData = await buyRes.json();
+      if (!buyRes.ok) {
+        console.error('❌ Buy failed:', buyData);
+        if (isManual) showNotification(`❌ Buy Failed: ${buyData.message || 'Unknown error'}`);
         return;
       }
-
-      console.log('✅ Market buy placed:', orderData);
+      console.log('✅ Market buy placed:', buyData);
 
       // --- Poll for fill ---
       let filledOrder = null;
       for (let i = 0; i < 20; i++) {
         try {
-          const statusRes = await fetch(`${ALPACA_BASE_URL}/orders/${orderData.id}`, {
-            headers: HEADERS,
-          });
-          const statusData = await statusRes.json();
-          if (statusData.status === 'filled') {
-            filledOrder = statusData;
+          const s = await fetch(`${ALPACA_BASE_URL}/orders/${buyData.id}`, { headers: HEADERS });
+          const sd = await s.json();
+          if (sd.status === 'filled') {
+            filledOrder = sd;
             break;
           }
-        } catch (pollErr) {
-          console.error('❌ Poll error:', pollErr);
+        } catch (e) {
+          console.error('❌ Poll error:', e);
           break;
         }
         await sleep(3000);
       }
-
-      if (!filledOrder) {
-        console.log('❌ Buy not filled in time, aborting sell');
-        return;
-      }
+      if (!filledOrder) return;
 
       const filledPrice = parseFloat(filledOrder.filled_avg_price);
       const sellBasis = isNaN(filledPrice) ? price : filledPrice;
-
       showNotification(`✅ Buy Filled: ${alpacaSymbol} at $${sellBasis.toFixed(2)}`);
 
-      // --- Wait briefly, then confirm position qty with same symbol format ---
+      // --- Confirm position qty, then sell slightly less to avoid fee/precision over-ask ---
       await sleep(5000);
 
-      let positionQty = parseFloat(filledOrder.filled_qty);
+      let positionQty = parseFloat(filledOrder.filled_qty || '0');
       for (let posAttempt = 1; posAttempt <= 3; posAttempt++) {
         try {
-          const posRes = await fetch(`${ALPACA_BASE_URL}/positions/${encodeURIComponent(alpacaSymbol)}`, {
-            headers: HEADERS,
-          });
+          const posRes = await fetch(
+            `${ALPACA_BASE_URL}/positions/${encodeURIComponent(alpacaSymbol)}`,
+            { headers: HEADERS }
+          );
           if (posRes.ok) {
-            const posData = await posRes.json();
-            const fullQty = parseFloat(posData.qty);
+            const pos = await posRes.json();
+            const fullQty = parseFloat(pos.qty);
             if (!isNaN(fullQty)) {
-              positionQty = parseFloat(fullQty.toFixed(6));
+              positionQty = fullQty;
               break;
             }
           } else {
-            console.warn(
-              `❌ Position fetch failed (status ${posRes.status}), attempt ${posAttempt}`
-            );
+            console.warn(`❌ Position fetch failed (status ${posRes.status}), attempt ${posAttempt}`);
           }
-        } catch (posErr) {
-          console.error(`❌ Position fetch error on attempt ${posAttempt}:`, posErr);
+        } catch (err) {
+          console.error(`❌ Position fetch error on attempt ${posAttempt}:`, err);
         }
         if (posAttempt < 3) await sleep(1000);
       }
-      positionQty = parseFloat(positionQty.toFixed(6));
 
-      // --- Place limit sell ---
+      // Epsilon: sell a hair under to avoid "requested > available" after fees
+      const epsilon = 0.001; // 0.1%
+      let sellQty = Math.max(0, positionQty * (1 - epsilon));
+      sellQty = Math.floor(sellQty * 1e6) / 1e6; // 6 dp
+      if (sellQty <= 0) return;
+
       const limitSell = {
         symbol: alpacaSymbol,
-        qty: positionQty,
+        qty: sellQty.toFixed(6),
         side: 'sell',
         type: 'limit',
         time_in_force: 'gtc',
         order_class: 'simple',
-        extended_hours: true,
         limit_price: (sellBasis * 1.0025).toFixed(2),
       };
 
@@ -323,49 +279,33 @@ export default function App() {
       let lastStatus = null;
       for (let attempt = 1; attempt <= 3 && !sellSuccess; attempt++) {
         const ts = new Date().toISOString();
-        console.log(
-          `[${ts}] ⏳ Sell attempt ${attempt} with params: ${JSON.stringify(limitSell)}`
-        );
+        console.log(`[${ts}] ⏳ Sell attempt ${attempt}:`, limitSell);
         try {
           const sellRes = await fetch(`${ALPACA_BASE_URL}/orders`, {
             method: 'POST',
             headers: HEADERS,
             body: JSON.stringify(limitSell),
           });
-          const rawBody = await sellRes.text();
-          let sellData;
+          const raw = await sellRes.text();
+          let body;
           try {
-            sellData = JSON.parse(rawBody);
-          } catch (e) {
-            sellData = rawBody;
+            body = JSON.parse(raw);
+          } catch {
+            body = raw;
           }
           if (sellRes.ok) {
             sellSuccess = true;
-            console.log(
-              `✅ Limit sell placed for ${alpacaSymbol}: qty=${limitSell.qty} limit=${limitSell.limit_price}`,
-              sellData
-            );
-            showNotification(
-              `✅ Trade Executed: Sell order placed at $${limitSell.limit_price}`
-            );
+            console.log(`✅ Limit sell placed for ${alpacaSymbol}`, body);
+            showNotification(`✅ Sell placed at $${limitSell.limit_price}`);
           } else {
             lastStatus = sellRes.status;
-            lastErrorMsg = sellData?.message || JSON.stringify(sellData);
-            console.error(
-              `[${ts}] ❌ Sell attempt ${attempt} failed (status ${sellRes.status}):`,
-              sellData,
-              JSON.stringify(limitSell),
-              Array.from(sellRes.headers.entries())
-            );
+            lastErrorMsg = body?.message || String(body);
+            console.error(`[${ts}] ❌ Sell failed (${sellRes.status}):`, body);
             if (attempt < 3) await sleep(5000);
           }
-        } catch (sellErr) {
-          lastErrorMsg = sellErr.message;
-          console.error(
-            `[${ts}] ❌ Sell error on attempt ${attempt}:`,
-            sellErr,
-            JSON.stringify(limitSell)
-          );
+        } catch (err) {
+          lastErrorMsg = err.message;
+          console.error(`[${ts}] ❌ Sell error:`, err);
           if (attempt < 3) await sleep(5000);
         }
       }
@@ -373,11 +313,7 @@ export default function App() {
       if (!sellSuccess) {
         const statusPart = lastStatus ? `Status: ${lastStatus}\n` : '';
         const msgPart = lastErrorMsg ? `Error: ${lastErrorMsg}` : 'Unknown error';
-        const match = /requested:\s*([0-9.]+),\s*available:\s*([0-9.]+)/i.exec(lastErrorMsg || '');
-        const qtyPart = match ? `Requested: ${match[1]}\nAvailable: ${match[2]}\n` : '';
-        showNotification(
-          `❌ Sell Failed: ${statusPart}${msgPart}\n${qtyPart}Unable to place sell order after retries`
-        );
+        showNotification(`❌ Sell Failed: ${statusPart}${msgPart}`);
       }
     } catch (err) {
       console.error('❌ Order error:', err);
@@ -406,49 +342,29 @@ export default function App() {
           `https://min-api.cryptocompare.com/data/price?fsym=${asset.cc || asset.symbol}&tsyms=USD`
         );
         const priceData = await priceRes.json();
-        if (typeof priceData.USD === 'number') {
-          token.price = priceData.USD;
-        } else {
-          console.warn(`Price unavailable for ${asset.symbol}`);
-        }
+        if (typeof priceData.USD === 'number') token.price = priceData.USD;
 
         const histoRes = await fetch(
           `https://min-api.cryptocompare.com/data/v2/histominute?fsym=${asset.cc || asset.symbol}&tsym=USD&limit=52&aggregate=15`
         );
         const histoData = await histoRes.json();
-        const histoBars = Array.isArray(histoData?.Data?.Data)
-          ? histoData.Data.Data
-          : [];
-        if (histoBars.length === 0) {
-          console.warn(`No chart data returned for ${asset.symbol}`);
-        }
-
-        const closes = histoBars
-          .map((bar) => bar.close)
-          .filter((c) => typeof c === 'number');
-        console.log(`Chart data for ${asset.symbol}: ${closes.length} closes`);
+        const bars = Array.isArray(histoData?.Data?.Data) ? histoData.Data.Data : [];
+        const closes = bars.map((b) => b.close).filter((c) => typeof c === 'number');
 
         if (closes.length >= 20) {
           const r = calcRSI(closes);
-          const macdRes = calcMACD(closes);
+          const m = calcMACD(closes);
           token.rsi = r != null ? r.toFixed(1) : null;
-          token.macd = macdRes.macd;
-          token.signal = macdRes.signal;
+          token.macd = m.macd;
+          token.signal = m.signal;
           const prev = calcMACD(closes.slice(0, -1));
-
-          token.entryReady =
-            token.macd != null &&
-            token.signal != null &&
-            token.macd > token.signal;
-
+          token.entryReady = token.macd != null && token.signal != null && token.macd > token.signal;
           token.watchlist =
             token.macd != null &&
             token.signal != null &&
             prev.macd != null &&
             token.macd > prev.macd &&
             token.macd <= token.signal;
-        } else if (closes.length > 0) {
-          console.warn(`Insufficient closes for ${asset.symbol}: ${closes.length}`);
         }
 
         token.trend = getTrendSymbol(closes);
@@ -556,19 +472,8 @@ export default function App() {
         </>
       )}
       {notification && (
-        <View
-          style={{
-            position: 'absolute',
-            bottom: 40,
-            left: 20,
-            right: 20,
-            padding: 12,
-            backgroundColor: '#333',
-            borderRadius: 8,
-            zIndex: 999,
-          }}
-        >
-          <Text style={{ color: '#fff', textAlign: 'center' }}>{notification}</Text>
+        <View style={styles.toast}>
+          <Text style={styles.toastText}>{notification}</Text>
         </View>
       )}
     </ScrollView>
@@ -578,38 +483,23 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flexGrow: 1, paddingTop: 40, paddingHorizontal: 10, backgroundColor: '#fff' },
   containerDark: { backgroundColor: '#121212' },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   title: { fontSize: 18, fontWeight: 'bold', color: '#000' },
   titleDark: { color: '#fff' },
-  cardGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-  },
-  card: {
-    width: '48%',
-    backgroundColor: '#f0f0f0',
-    padding: 10,
-    borderRadius: 6,
-    borderLeftWidth: 5,
-    marginBottom: 10,
-  },
-  cardWatchlist: {
-    borderColor: '#FFA500',
-    borderWidth: 2,
-  },
+  cardGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  card: { width: '48%', backgroundColor: '#f0f0f0', padding: 10, borderRadius: 6, borderLeftWidth: 5, marginBottom: 10 },
+  cardWatchlist: { borderColor: '#FFA500', borderWidth: 2 },
   symbol: { fontSize: 15, fontWeight: 'bold', color: '#005eff' },
   error: { color: 'red', fontSize: 12 },
   buyButton: { color: '#0066cc', marginTop: 8, fontWeight: 'bold' },
   noData: { textAlign: 'center', marginTop: 20, fontStyle: 'italic', color: '#777' },
   entryReady: { color: 'green', fontWeight: 'bold' },
   watchlist: { color: '#FFA500', fontWeight: 'bold' },
-  waiting: { alignItems: 'center', marginTop: 20 },
   sectionHeader: { fontSize: 16, fontWeight: 'bold', marginBottom: 5, marginTop: 10 },
   missing: { color: 'red', fontStyle: 'italic' },
+  toast: {
+    position: 'absolute', bottom: 40, left: 20, right: 20,
+    padding: 12, backgroundColor: '#333', borderRadius: 8, zIndex: 999,
+  },
+  toastText: { color: '#fff', textAlign: 'center' },
 });
